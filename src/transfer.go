@@ -39,26 +39,63 @@ type KttIssue struct {
 	Field1211  string //ID самого тикета в Jira "SQD-3720"
 }
 
-func TransferTicket(cfg *Config, issues []string) {
+type TicketStatistics struct {
+	TotalTickets   int
+	TicketsCreated int
+	Errors         int
+	Duplicates     int
+}
 
+type KttClient struct {
+	Client        *http.Client
+	Authorization string
+}
+
+type KttResponse string
+
+type KttTicketID string
+
+var statistics TicketStatistics
+
+func TransferTickets(cfg *Config, issues []string) {
+	var createdTickets []KttTicketID
+
+	//Create Jira system client
 	jiraClient := getJiraClient(cfg)
 
-	for _, issueKey := range issues {
+	//Create KTT system client
+	kttClient := getKttClient(cfg)
 
+	//For each Jira issue in list from CLI create linked ticket in KTT
+	for _, issueKey := range issues {
+		statistics.TotalTickets += 1
 		jiraIssue, err := getJiraIssue(issueKey, jiraClient)
 		if err != nil {
+			statistics.Errors += 1
 			log.Println(err)
 			continue
 		}
 
-		ticketId, err := createKttTicket(jiraIssue, cfg)
-		if err != nil {
-			log.Fatalln(err)
+		ticket := createKttTicket(jiraIssue, kttClient, cfg)
+		if ticket != "" {
+			createdTickets = append(createdTickets, ticket)
 		}
 
-		fmt.Println(jiraIssue)
+	}
 
-		fmt.Println(ticketId)
+	//Output results
+	log.Printf("\n\nResults:")
+	fmt.Printf("Tickets total: %v\n", statistics.TotalTickets)
+	fmt.Printf("Tickets created: %v\n", statistics.TicketsCreated)
+	fmt.Printf("Errors: %v\n", statistics.Errors)
+	fmt.Printf("Duplicates: %v\n", statistics.Duplicates)
+
+	if len(createdTickets) > 0 {
+		log.Printf("\n\nCreated tickets:")
+
+		for _, ticket := range createdTickets {
+			fmt.Printf(globalConfig.KTT.URL + "Task/View/" + string(ticket) + "\n")
+		}
 	}
 
 }
@@ -76,6 +113,19 @@ func getJiraClient(cfg *Config) *jira.Client {
 	return jiraClient
 }
 
+func getKttClient(cfg *Config) *KttClient {
+
+	kttAuthorization := base64.StdEncoding.EncodeToString([]byte(cfg.KTT.Username + ":" + cfg.KTT.Password))
+
+	client := &http.Client{}
+
+	kttClient := KttClient{
+		Client:        client,
+		Authorization: kttAuthorization}
+
+	return &kttClient
+}
+
 func getJiraIssue(issueKey string, jiraClient *jira.Client) (JiraIssue, error) {
 
 	var jiraIssue JiraIssue
@@ -89,11 +139,17 @@ func getJiraIssue(issueKey string, jiraClient *jira.Client) (JiraIssue, error) {
 	jiraIssue.Key = issue.Key                        //Task key
 	jiraIssue.Summary = issue.Fields.Summary         //Task name
 	jiraIssue.Estimation = issue.Fields.TimeEstimate //Estimation
-	jiraIssue.ParentKey = issue.Fields.Parent.Key    //Parent task key
+	if issue.Fields.Parent != nil {
+		jiraIssue.ParentKey = issue.Fields.Parent.Key //Parent task key
+	}
 
+	if jiraIssue.ParentKey == "" {
+		return jiraIssue, fmt.Errorf("issue %v does not have parent ticket, do nothing", issueKey)
+	}
 	issue, _, err = jiraClient.Issue.Get(jiraIssue.ParentKey, nil)
 	if err != nil {
-		log.Fatalln(err)
+		log.Printf("Cannot find parent ticket %v", issueKey)
+		return jiraIssue, err
 	}
 
 	jiraIssue.ParentSummary = issue.Fields.Summary //Parent task summary
@@ -111,59 +167,124 @@ func getJiraIssue(issueKey string, jiraClient *jira.Client) (JiraIssue, error) {
 
 }
 
-func createKttTicket(jiraIssue JiraIssue, cfg *Config) (ticketId string, err error) {
+func createKttTicket(jiraIssue JiraIssue, kttClient *KttClient, cfg *Config) KttTicketID {
+	//Will store ID of created KTT ticket
+	var kttTicketID string
 
+	//Construct ticket structure
+	kttIssue := constructKttIssueFromJiraIssue(jiraIssue)
+
+	//Prepare HTTP request
+	req := constructHTTPRequest(kttIssue, kttClient)
+
+	//Send HTTP request
+	kttResponse := sendHTTPRequestToKTT(kttClient, req)
+	if kttResponse != "" {
+		//Parse response body
+		kttTicketID = getTicketID(kttResponse)
+		log.Printf("For Jira issue %v ticket created in KTT: %v", jiraIssue.Key, kttTicketID)
+
+	} else {
+		log.Printf("For Jira issue %v ticket not created in KTT", jiraIssue.Key)
+	}
+
+	return KttTicketID(kttTicketID)
+
+}
+
+func constructHTTPRequest(kttIssue KttIssue, kttClient *KttClient) *http.Request {
+	byteKttIssue, err := json.Marshal(kttIssue)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fullURL := globalConfig.KTT.URL + "api/task/"
+	req, _ := http.NewRequest("POST", fullURL, bytes.NewBuffer(byteKttIssue))
+	req.Header.Set("Authorization", "Basic "+kttClient.Authorization)
+	req.Header.Set("Content-Type", "application/json")
+
+	return req
+
+}
+
+func constructKttIssueFromJiraIssue(jiraIssue JiraIssue) KttIssue {
 	//Заполнить по дефолту
 	//*Статус = Открыто
 	//*Task start date(понедельник следующей недели)
 	//*Срок = пятница следующей недели
 	//*Ответственный = DevQueue
-
-	kttAuthorization := base64.StdEncoding.EncodeToString([]byte(cfg.KTT.Username + ":" + cfg.KTT.Password))
-
 	var kttIssue KttIssue
 
 	kttIssue.Deadline = "2021-07-02T18:00:00" //TODO: Сделать динамический расчет
 	kttIssue.Description = jiraIssue.ParentDescription
 	kttIssue.ExecutorIds = "5408" //Default
-	kttIssue.Name = jiraIssue.ParentSummary
+	kttIssue.Name = jiraIssue.ParentSummary + "_" + jiraIssue.Summary
 	kttIssue.PriorityId = 9  //Default
-	kttIssue.ServiceId = 150 //Create mapping
+	kttIssue.ServiceId = 150 //TODO: Create mapping
 	kttIssue.StatusId = 31   //Default
 	kttIssue.TypeId = 1037   //Задача Inchcape Default
 	kttIssue.WorkflowId = 13 //Default
 	kttIssue.Field1130 = jiraIssue.ParentKey
-	kttIssue.Field1131 = "0"                   //Estimation, продумать откуда брать
-	kttIssue.Field1133 = "2021-06-28T17:00:00" //Task start date Сделать динамический расчет
+	kttIssue.Field1131 = "0"                   //TODO: Estimation, продумать откуда брать
+	kttIssue.Field1133 = "2021-06-28T17:00:00" //TODO:Task start date Сделать динамический расчет
 	kttIssue.Field1211 = jiraIssue.Key
 
-	byteKttIssue, err := json.Marshal(kttIssue)
+	return kttIssue
+}
 
-	//var jsonStr = []byte(`{"title":"Buy cheese and bread for breakfast."}`)
+func sendHTTPRequestToKTT(kttClient *KttClient, request *http.Request) KttResponse {
+	//Perform POST request against KTT only in "normal" mode
+	if applicationMode == "normal" {
 
-	client := &http.Client{}
-	fullURL := cfg.KTT.URL + "api/task/"
-	req, _ := http.NewRequest("POST", fullURL, bytes.NewBuffer(byteKttIssue))
-	req.Header.Set("Authorization", "Basic "+kttAuthorization)
-	req.Header.Set("Content-Type", "application/json")
-
-	res, err := client.Do(req)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer res.Body.Close()
-
-	fmt.Println("Status code ")
-	fmt.Print(res.StatusCode)
-	if res.StatusCode == http.StatusCreated {
-		bodyBytes, err := ioutil.ReadAll(res.Body)
+		response, err := kttClient.Client.Do(request)
 		if err != nil {
 			log.Fatal(err)
 		}
-		bodyString := string(bodyBytes)
-		fmt.Println(bodyString)
+		defer response.Body.Close()
+
+		log.Printf("Status code %v", response.StatusCode)
+
+		if response.StatusCode == http.StatusCreated {
+			statistics.TicketsCreated += 1
+			bodyBytes, err := ioutil.ReadAll(response.Body)
+			if err != nil {
+				log.Fatal(err)
+			}
+			bodyString := string(bodyBytes)
+			//fmt.Println(bodyString)
+			return KttResponse(bodyString)
+		} else {
+			statistics.Errors += 1
+		}
+
 	}
 
-	//TODO: Correct return value
-	return "123456", nil
+	if applicationMode == "test" {
+		log.Println("In test mode, pass ticket creation...")
+	}
+
+	return ""
+}
+
+func getTicketID(kttResponse KttResponse) string {
+
+	var result map[string]interface{}
+	json.Unmarshal([]byte(kttResponse), &result)
+
+	// The object stored in the "Task" key is also stored as
+	// a map[string]interface{} type, and its type is asserted from
+	// the interface{} type
+	task := result["Task"].(map[string]interface{})
+
+	var ticketId string
+
+	for key, value := range task {
+
+		if key == "Id" {
+			ticketId = fmt.Sprintf("%v", int(value.(float64)))
+			break
+		}
+	}
+
+	return ticketId
 }

@@ -9,6 +9,9 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+//Mode
+type ApplicationMode string
+
 //Path to configuration file
 type ConfigPath string
 
@@ -35,6 +38,14 @@ type Config struct {
 		Password string `yaml:"password"`
 	} `yaml:"Jira"`
 }
+
+//Current application mode(default=normal)
+var applicationMode ApplicationMode
+
+
+
+//Possible application modes(constant array)
+var applicationModes = [...]ApplicationMode {"normal", "test"}
 
 //Check mandatory fields in configuration and in CLI parameters
 func CheckMandatoryConfiguration(cfg *Config, jiraIssues JiraIssueList) {
@@ -104,21 +115,34 @@ func NewConfig(configPath ConfigPath) (*Config, error) {
 func ParseFlags() (ConfigPath, JiraIssueList, error) {
 	// String that contains the configured configuration path
 	var configPathStr string
+	var appModeStr string
+	
 
 	// Set up a CLI flag called "-config" to allow users
 	// to supply the configuration file
 	flag.StringVar(&configPathStr, "config", "~/.config/jira-ktt-copypaster/config.yaml", "path to config file")
 
+	flag.StringVar(&appModeStr, "mode", "normal", "application mode")
+
+	
+	
 	// Actually parse the flags
 	flag.Parse()
 
+	//APPLICATION MODE
+	applicationMode = ApplicationMode(appModeStr)
+	if err := validateApplicationMode(applicationMode); err != nil {
+		return "", nil, err
+	}
+	
+	//JIRA TICKETS 
 	//All the rest(list og jira issues separated by )
 	tail := flag.Args()
+	log.Printf("List of Jira tickets to process: %+q\n", tail)
 
-	fmt.Printf("List of Jira tickets: %+q\n", tail)
-
+	//PATH
 	// Validate the path first
-	if err := ValidateConfigPath(configPathStr); err != nil {
+	if err := validateConfigPath(configPathStr); err != nil {
 		return "", nil, err
 	}
 
@@ -131,7 +155,7 @@ func ParseFlags() (ConfigPath, JiraIssueList, error) {
 
 // ValidateConfigPath just makes sure, that the path provided is a file,
 // that can be read
-func ValidateConfigPath(path string) error {
+func validateConfigPath(path string) error {
 	s, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -140,4 +164,15 @@ func ValidateConfigPath(path string) error {
 		return fmt.Errorf("'%s' is a directory, not a normal file", path)
 	}
 	return nil
+}
+
+func validateApplicationMode(appMode ApplicationMode) error {
+
+	for _, mode := range applicationModes {
+        if mode == appMode {
+            return nil
+        }
+    }
+	
+    return fmt.Errorf("invalid application mode. Please select one of: %+q",applicationModes)
 }
