@@ -1,0 +1,8 @@
+KTT:
+  url: https://ssc.k2consult.ru/
+  username: user
+  password: my-secret-password
+Jira:
+  url: https://inchcapeglobal.atlassian.net/
+  username: user2
+  password: my-secret-password-2
