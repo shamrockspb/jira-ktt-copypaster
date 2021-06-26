@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/andygrunwald/go-jira"
 )
@@ -208,27 +209,36 @@ func constructHTTPRequest(kttIssue KttIssue, kttClient *KttClient) *http.Request
 }
 
 func constructKttIssueFromJiraIssue(jiraIssue JiraIssue) KttIssue {
-	//Заполнить по дефолту
-	//*Статус = Открыто
-	//*Task start date(понедельник следующей недели)
-	//*Срок = пятница следующей недели
-	//*Ответственный = DevQueue
+
 	var kttIssue KttIssue
 
-	kttIssue.Deadline = "2021-07-02T18:00:00" //TODO: Сделать динамический расчет
+	//Filled from Jira issue
 	kttIssue.Description = jiraIssue.ParentDescription
-	kttIssue.ExecutorIds = "5408" //Default
 	kttIssue.Name = jiraIssue.ParentSummary + "_" + jiraIssue.Summary
-	kttIssue.PriorityId = 9  //Default
-	kttIssue.ServiceId = 150 //TODO: Create mapping
-	kttIssue.StatusId = 31   //Default
-	kttIssue.TypeId = 1037   //Задача Inchcape Default
-	kttIssue.WorkflowId = 13 //Default
 	kttIssue.Field1130 = jiraIssue.ParentKey
 	kttIssue.Field1131 = "0"                   //TODO: Estimation, продумать откуда брать
-	kttIssue.Field1133 = "2021-06-28T17:00:00" //TODO:Task start date Сделать динамический расчет
 	kttIssue.Field1211 = jiraIssue.Key
 
+	//Filled from configuration file
+	kttIssue.ExecutorIds = globalConfig.KTT.TicketDefaults.ExecutorIds 
+	kttIssue.PriorityId = globalConfig.KTT.TicketDefaults.PriorityId  
+	kttIssue.ServiceId = 150 //TODO: Create mapping
+	kttIssue.StatusId = globalConfig.KTT.TicketDefaults.StatusId   
+	kttIssue.TypeId =  globalConfig.KTT.TicketDefaults.TypeId 
+	kttIssue.WorkflowId = globalConfig.KTT.TicketDefaults.WorkflowId 
+	
+	//Calculated fields
+	//*Task start date(понедельник следующей недели)
+	//*Срок = пятница следующей недели
+	
+	monday, friday := getTicketWorkdays(globalConfig.KTT.Parameters.AddWeeks)
+	
+	kttIssue.Deadline = friday.Format(time.RFC3339)  //TODO: Разобраться, почему не присваивается это поле
+	kttIssue.Field1133 = monday.Format(time.RFC3339)
+	
+	log.Printf("Monday: %v", kttIssue.Field1133)
+	log.Printf("Friday: %v", kttIssue.Deadline)
+	
 	return kttIssue
 }
 

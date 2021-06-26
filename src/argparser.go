@@ -27,6 +27,22 @@ type Config struct {
 		Username string `yaml:"username"`
 		//Password for connecting to KTT
 		Password string `yaml:"password"`
+
+		TicketDefaults struct {
+			ExecutorIds string `yaml:"ExecutorIds"`
+			PriorityId int     `yaml:"PriorityId"`
+			StatusId int     	`yaml:"StatusId"`
+			TypeId int     `yaml:"TypeId"`
+			WorkflowId int     `yaml:"WorkflowId"`
+
+		} `yaml:"TicketDefaults"`
+
+		Parameters struct {
+			AddWeeks int `yaml:"AddWeeks"`
+
+		} `yaml:"Parameters"`
+
+
 	} `yaml:"KTT"`
 
 	Jira struct {
@@ -38,6 +54,7 @@ type Config struct {
 		Password string `yaml:"password"`
 	} `yaml:"Jira"`
 }
+  
 
 //Current application mode(default=normal)
 var applicationMode ApplicationMode
