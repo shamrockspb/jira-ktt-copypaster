@@ -2,6 +2,14 @@ KTT:
   url: https://ssc.k2consult.ru/
   username: user
   password: my-secret-password
+  TicketDefaults:
+    ExecutorIds:  "5408"  #DevQueue
+    PriorityId:   9       #P3
+    StatusId:     31      #Open
+    TypeId:       1037    #Inchcape ticket
+    WorkflowId:   13      #Default value
+  Parameters:
+    AddWeeks: 1           #How many weeks to add to ticket deadline
 Jira:
   url: https://inchcapeglobal.atlassian.net/
   username: user2
