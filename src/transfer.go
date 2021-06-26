@@ -8,38 +8,43 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/andygrunwald/go-jira"
 )
 
+//Represents fields from Jira issue
 type JiraIssue struct {
 	Key               string
 	Summary           string
-	Estimation        int
+	Estimation        string
 	ParentKey         string
 	ParentSummary     string
 	ParentBudget      string
 	ParentDescription string
 }
 
+//Represents fields from KTT issue
 type KttIssue struct {
-	Deadline    string //2021-07-02T18:00:00
-	Description string //Длинный текст из родительской заявки
-	ExecutorIds string //Исполнитель "5408" Default(Dev Queue)
-	Name        string //Наименование из родительской заявки "CRM: SQD-2438 QC56997: доработка в блоке исх. опроса для качественного опроса клиентов оценки"
+	Deadline    string //Deadline In RFC3339 format
+	Description string //Long text
+	ExecutorIds string //Id of assigned employee
+	Name        string //Short issue name
 	//ObserverIds string
-	PriorityId int    // 9 Default
-	ServiceId  int    //150 - IMP_22 "ServicePath":"103|566|137|150|",5  Нужен маппинг
-	StatusId   int    //31  Открыто Default
-	TypeId     int    //1037  Задача Inchcape Default
+	PriorityId int    //Default is p3(value - 9)
+	ServiceId  int    //Value mapping between JiraIssue.ParentBudget and KttIssue.ServiceId defined in configuration  150 - IMP_22 "ServicePath":"103|566|137|150|"
+	StatusId   int    //Default is Open(value - 31)
+	TypeId     int    //Default is Inchcape Task(value - 1037)
 	WorkflowId int    // 13 Default
-	Field1130  string //Родительская заявка "SQD-2438"
-	Field1131  string //Estimation "24"
-	Field1133  string //Task start date "2021-06-28T17:00:00"
-	Field1211  string //ID самого тикета в Jira "SQD-3720"
+	Field1130  string //Parent ticket ID in Jira(JiraIssue.ParentKey)
+	Field1131  string //Estimation in hours
+	Field1133  string //Start date time in RFC3339 format
+	Field1211  string //Ticket ID in Jira(JiraIssue.Key)
 }
 
+//Represents statistics that will be printed at the end of processing
 type TicketStatistics struct {
 	TotalTickets   int
 	TicketsCreated int
@@ -47,13 +52,16 @@ type TicketStatistics struct {
 	Duplicates     int
 }
 
+//Represents KTT http client and its authorization token
 type KttClient struct {
 	Client        *http.Client
 	Authorization string
 }
 
+//Responce body from KTT with created ticket data
 type KttResponse string
 
+//Id of created ticket in KTT
 type KttTicketID string
 
 var statistics TicketStatistics
@@ -85,19 +93,7 @@ func TransferTickets(cfg *Config, issues []string) {
 	}
 
 	//Output results
-	log.Printf("\n\nResults:")
-	fmt.Printf("Tickets total: %v\n", statistics.TotalTickets)
-	fmt.Printf("Tickets created: %v\n", statistics.TicketsCreated)
-	fmt.Printf("Errors: %v\n", statistics.Errors)
-	fmt.Printf("Duplicates: %v\n", statistics.Duplicates)
-
-	if len(createdTickets) > 0 {
-		log.Printf("\n\nCreated tickets:")
-
-		for _, ticket := range createdTickets {
-			fmt.Printf(globalConfig.KTT.URL + "Task/View/" + string(ticket) + "\n")
-		}
-	}
+	printTransferResults(statistics, createdTickets)
 
 }
 
@@ -114,6 +110,7 @@ func getJiraClient(cfg *Config) *jira.Client {
 	return jiraClient
 }
 
+//getKttClient returns http client for KTT system with authorization token included
 func getKttClient(cfg *Config) *KttClient {
 
 	kttAuthorization := base64.StdEncoding.EncodeToString([]byte(cfg.KTT.Username + ":" + cfg.KTT.Password))
@@ -137,13 +134,16 @@ func getJiraIssue(issueKey string, jiraClient *jira.Client) (JiraIssue, error) {
 		return jiraIssue, err
 	}
 
-	jiraIssue.Key = issue.Key                        //Task key
-	jiraIssue.Summary = issue.Fields.Summary         //Task name
-	jiraIssue.Estimation = issue.Fields.TimeEstimate //Estimation
+	//Fields from ticket itself
+	jiraIssue.Key = issue.Key                                         //Task key
+	jiraIssue.Summary = issue.Fields.Summary                          //Task name
+	jiraIssue.Estimation = issue.Fields.TimeTracking.OriginalEstimate //Estimation
+
 	if issue.Fields.Parent != nil {
 		jiraIssue.ParentKey = issue.Fields.Parent.Key //Parent task key
 	}
 
+	//Fields from parent ticket
 	if jiraIssue.ParentKey == "" {
 		return jiraIssue, fmt.Errorf("issue %v does not have parent ticket, do nothing", issueKey)
 	}
@@ -216,30 +216,75 @@ func constructKttIssueFromJiraIssue(jiraIssue JiraIssue) KttIssue {
 	kttIssue.Description = jiraIssue.ParentDescription
 	kttIssue.Name = jiraIssue.ParentSummary + "_" + jiraIssue.Summary
 	kttIssue.Field1130 = jiraIssue.ParentKey
-	kttIssue.Field1131 = "0"                   //TODO: Estimation, продумать откуда брать
+	kttIssue.Field1131 = convertEstimationToHours(jiraIssue.Estimation)
 	kttIssue.Field1211 = jiraIssue.Key
 
 	//Filled from configuration file
-	kttIssue.ExecutorIds = globalConfig.KTT.TicketDefaults.ExecutorIds 
-	kttIssue.PriorityId = globalConfig.KTT.TicketDefaults.PriorityId  
+	kttIssue.ExecutorIds = globalConfig.KTT.TicketDefaults.ExecutorIds
+	kttIssue.PriorityId = globalConfig.KTT.TicketDefaults.PriorityId
 	kttIssue.ServiceId = 150 //TODO: Create mapping
-	kttIssue.StatusId = globalConfig.KTT.TicketDefaults.StatusId   
-	kttIssue.TypeId =  globalConfig.KTT.TicketDefaults.TypeId 
-	kttIssue.WorkflowId = globalConfig.KTT.TicketDefaults.WorkflowId 
-	
+	kttIssue.StatusId = globalConfig.KTT.TicketDefaults.StatusId
+	kttIssue.TypeId = globalConfig.KTT.TicketDefaults.TypeId
+	kttIssue.WorkflowId = globalConfig.KTT.TicketDefaults.WorkflowId
+
 	//Calculated fields
-	//*Task start date(понедельник следующей недели)
-	//*Срок = пятница следующей недели
-	
 	monday, friday := getTicketWorkdays(globalConfig.KTT.Parameters.AddWeeks)
-	
-	kttIssue.Deadline = friday.Format(time.RFC3339)  //TODO: Разобраться, почему не присваивается это поле
+
+	kttIssue.Deadline = friday.Format(time.RFC3339) //TODO: Разобраться, почему не присваивается это поле
 	kttIssue.Field1133 = monday.Format(time.RFC3339)
-	
-	log.Printf("Monday: %v", kttIssue.Field1133)
-	log.Printf("Friday: %v", kttIssue.Deadline)
-	
+
+	/*
+	if(applicationMode == "test") {
+		fmt.Printf("\n\n%v\n\n", kttIssue)
+	}
+	*/
 	return kttIssue
+}
+
+//Convert from "1w 2d 4h 45m" to "60" in hours. If minutes are present, we just round them to one hour.
+func convertEstimationToHours(jiraEstimation string) string {
+	//Use regexp
+	totalHours := 0
+
+	//Convert weeks to hours
+	re := regexp.MustCompile(`(\d*)w`)
+	submatch := re.FindStringSubmatch(jiraEstimation)
+
+	if submatch != nil {
+		if weeks, err := strconv.Atoi(submatch[1]); err == nil {
+			totalHours = totalHours + weeks*40
+		}
+	}
+
+	//Convert days to hours
+	re = regexp.MustCompile(`(\d*)d`)
+	submatch = re.FindStringSubmatch(jiraEstimation)
+
+	if submatch != nil {
+		if days, err := strconv.Atoi(submatch[1]); err == nil {
+			totalHours = totalHours + days*8
+		}
+	}
+
+	//Add hours to already calculated value
+	re = regexp.MustCompile(`(\d*)h`)
+	submatch = re.FindStringSubmatch(jiraEstimation)
+
+	if submatch != nil {
+		if hours, err := strconv.Atoi(submatch[1]); err == nil {
+			totalHours = totalHours + hours
+		}
+	}
+
+	//Add one hour, if some minutes are present(rounding to the up)
+	re = regexp.MustCompile(`(\d*)m`)
+	submatch = re.FindStringSubmatch(jiraEstimation)
+
+	if submatch != nil {
+		totalHours += 1
+	}
+
+	return strconv.Itoa(totalHours)
 }
 
 func sendHTTPRequestToKTT(kttClient *KttClient, request *http.Request) KttResponse {
@@ -297,4 +342,22 @@ func getTicketID(kttResponse KttResponse) string {
 	}
 
 	return ticketId
+}
+
+func printTransferResults(statistics TicketStatistics, createdTickets []KttTicketID) {
+	//Output results
+	log.Printf("\n\nResults:")
+	fmt.Printf("Tickets total: %v\n", statistics.TotalTickets)
+	fmt.Printf("Tickets created: %v\n", statistics.TicketsCreated)
+	fmt.Printf("Errors: %v\n", statistics.Errors)
+	fmt.Printf("Duplicates: %v\n", statistics.Duplicates)
+
+	if len(createdTickets) > 0 {
+		log.Printf("\n\nCreated tickets:")
+
+		for _, ticket := range createdTickets {
+			fmt.Printf(globalConfig.KTT.URL + "Task/View/" + string(ticket) + "\n")
+		}
+	}
+
 }
