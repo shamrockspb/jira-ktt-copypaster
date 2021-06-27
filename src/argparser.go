@@ -183,6 +183,7 @@ func validateConfigPath(path string) error {
 	return nil
 }
 
+//Validate application mode - can be only from fixed values(default is "normal")
 func validateApplicationMode(appMode ApplicationMode) error {
 
 	for _, mode := range applicationModes {

@@ -6,7 +6,7 @@ import (
 )
 
 //getTicketWorkdays returns Monday and Friday of the week after weeksOffset weeks
-func getTicketWorkdays(weeksOffset int)(time.Time, time.Time) {
+func GetTicketWorkdays(weeksOffset int)(time.Time, time.Time) {
 
 	now := time.Now()
 

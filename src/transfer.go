@@ -58,14 +58,18 @@ type KttClient struct {
 	Authorization string
 }
 
-//Responce body from KTT with created ticket data
+//Response body from KTT with created ticket data
 type KttResponse string
 
 //Id of created ticket in KTT
 type KttTicketID string
 
+
+
+//Global Variables
 var statistics TicketStatistics
 
+//TransferTickets handles main logic for transferring tickets from Jira to KTT system
 func TransferTickets(cfg *Config, issues []string) {
 	var createdTickets []KttTicketID
 
@@ -97,6 +101,7 @@ func TransferTickets(cfg *Config, issues []string) {
 
 }
 
+//getJiraClient returns HTTP client for Jira system with authorization set up
 func getJiraClient(cfg *Config) *jira.Client {
 	tp := jira.BasicAuthTransport{
 		Username: cfg.Jira.Username,
@@ -110,7 +115,7 @@ func getJiraClient(cfg *Config) *jira.Client {
 	return jiraClient
 }
 
-//getKttClient returns http client for KTT system with authorization token included
+//getKttClient returns HTTP client for KTT system with authorization token included
 func getKttClient(cfg *Config) *KttClient {
 
 	kttAuthorization := base64.StdEncoding.EncodeToString([]byte(cfg.KTT.Username + ":" + cfg.KTT.Password))
@@ -124,6 +129,7 @@ func getKttClient(cfg *Config) *KttClient {
 	return &kttClient
 }
 
+//getJiraIssue seachs for issue in Jira system, and returns JiraIssue struct(or error)
 func getJiraIssue(issueKey string, jiraClient *jira.Client) (JiraIssue, error) {
 
 	var jiraIssue JiraIssue
@@ -168,6 +174,7 @@ func getJiraIssue(issueKey string, jiraClient *jira.Client) (JiraIssue, error) {
 
 }
 
+//createKttTicket performs ticket creation in KTT system by provided information from Jira, and returns created ticket ID
 func createKttTicket(jiraIssue JiraIssue, kttClient *KttClient, cfg *Config) KttTicketID {
 	//Will store ID of created KTT ticket
 	var kttTicketID string
@@ -193,6 +200,7 @@ func createKttTicket(jiraIssue JiraIssue, kttClient *KttClient, cfg *Config) Ktt
 
 }
 
+//constructHTTPRequest returns http request with body marshalled from provided kttIssue
 func constructHTTPRequest(kttIssue KttIssue, kttClient *KttClient) *http.Request {
 	byteKttIssue, err := json.Marshal(kttIssue)
 	if err != nil {
@@ -208,6 +216,7 @@ func constructHTTPRequest(kttIssue KttIssue, kttClient *KttClient) *http.Request
 
 }
 
+//constructKttIssueFromJiraIssue transforms Jira issue to KTT format, and returns transformed message
 func constructKttIssueFromJiraIssue(jiraIssue JiraIssue) KttIssue {
 
 	var kttIssue KttIssue
@@ -228,7 +237,7 @@ func constructKttIssueFromJiraIssue(jiraIssue JiraIssue) KttIssue {
 	kttIssue.WorkflowId = globalConfig.KTT.TicketDefaults.WorkflowId
 
 	//Calculated fields
-	monday, friday := getTicketWorkdays(globalConfig.KTT.Parameters.AddWeeks)
+	monday, friday := GetTicketWorkdays(globalConfig.KTT.Parameters.AddWeeks)
 
 	kttIssue.Deadline = friday.Format(time.RFC3339) //TODO: Разобраться, почему не присваивается это поле
 	kttIssue.Field1133 = monday.Format(time.RFC3339)
@@ -287,6 +296,7 @@ func convertEstimationToHours(jiraEstimation string) string {
 	return strconv.Itoa(totalHours)
 }
 
+//sendHTTPRequestToKTT sends HTTP request to KTT via kttClient, and returns response body as string
 func sendHTTPRequestToKTT(kttClient *KttClient, request *http.Request) KttResponse {
 	//Perform POST request against KTT only in "normal" mode
 	if applicationMode == "normal" {
@@ -321,6 +331,7 @@ func sendHTTPRequestToKTT(kttClient *KttClient, request *http.Request) KttRespon
 	return ""
 }
 
+//getTicketID extracts ID of created KTT ticket from response body
 func getTicketID(kttResponse KttResponse) string {
 
 	var result map[string]interface{}
@@ -344,6 +355,7 @@ func getTicketID(kttResponse KttResponse) string {
 	return ticketId
 }
 
+//printTransferResults prints statistics to standard output, and also prints links to created tickets in KTT
 func printTransferResults(statistics TicketStatistics, createdTickets []KttTicketID) {
 	//Output results
 	log.Printf("\n\nResults:")
