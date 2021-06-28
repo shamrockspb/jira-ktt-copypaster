@@ -64,13 +64,16 @@ type KttResponse string
 //Id of created ticket in KTT
 type KttTicketID string
 
+//Id of ticket in Jira
+//type JiraTicketID string
+
 
 
 //Global Variables
 var statistics TicketStatistics
 
 //TransferTickets handles main logic for transferring tickets from Jira to KTT system
-func TransferTickets(cfg *Config, issues []string) {
+func TransferTickets(cfg *Config, issues JiraIssueList) {
 	var createdTickets []KttTicketID
 
 	//Create Jira system client
@@ -82,6 +85,13 @@ func TransferTickets(cfg *Config, issues []string) {
 	//For each Jira issue in list from CLI create linked ticket in KTT
 	for _, issueKey := range issues {
 		statistics.TotalTickets += 1
+		
+		
+		
+		if existingIssues := searchKttIssues(issueKey, kttClient); len(existingIssues) > 0 {
+			log.Printf("sd") 
+		}
+
 		jiraIssue, err := getJiraIssue(issueKey, jiraClient)
 		if err != nil {
 			statistics.Errors += 1
@@ -128,6 +138,41 @@ func getKttClient(cfg *Config) *KttClient {
 
 	return &kttClient
 }
+
+func searchKttIssues(jiraTicketID string, kttClient *KttClient) []KttTicketID {
+	
+	//Запрос для поиска заявок
+	//https://ssc.k2consult.ru/api/task?search=SQD-622&fields=Id,ExecutorIds,Closed,Data
+
+	//Найти заявки, удовлетворяющие критериям поиска
+	//	Сконструировать запрос
+
+	//Выделить номера заявок из строки результата
+	//Вывести заявки в консоль, уточнить у пользователя - следует ли еще раз создать заявку
+	//При отрицательном ответе - переходить к следующей, при пложительном - создавать 
+
+
+	var kttTickets []KttTicketID
+	//Prepare HTTP request
+	req := constructHTTPGETRequest(jiraTicketID, kttClient)
+
+	//Send HTTP request
+	kttResponse := sendHTTPGETRequestToKTT(kttClient, req)
+
+	if kttResponse != "" {
+		//Parse response body
+		kttTickets = getTicketIDs(kttResponse) 
+		//log.Printf("For Jira issue %v ticket created in KTT: %v", jiraIssue.Key, kttTicketID)
+
+	} else {
+		//log.Printf("For Jira issue %v ticket not created in KTT", jiraIssue.Key)
+	}
+
+	return kttTickets
+
+
+}
+
 
 //getJiraIssue seachs for issue in Jira system, and returns JiraIssue struct(or error)
 func getJiraIssue(issueKey string, jiraClient *jira.Client) (JiraIssue, error) {
@@ -183,10 +228,10 @@ func createKttTicket(jiraIssue JiraIssue, kttClient *KttClient, cfg *Config) Ktt
 	kttIssue := constructKttIssueFromJiraIssue(jiraIssue)
 
 	//Prepare HTTP request
-	req := constructHTTPRequest(kttIssue, kttClient)
+	req := constructHTTPPOSTRequest(kttIssue, kttClient)
 
 	//Send HTTP request
-	kttResponse := sendHTTPRequestToKTT(kttClient, req)
+	kttResponse := sendHTTPPOSTRequestToKTT(kttClient, req)
 	if kttResponse != "" {
 		//Parse response body
 		kttTicketID = getTicketID(kttResponse)
@@ -200,8 +245,8 @@ func createKttTicket(jiraIssue JiraIssue, kttClient *KttClient, cfg *Config) Ktt
 
 }
 
-//constructHTTPRequest returns http request with body marshalled from provided kttIssue
-func constructHTTPRequest(kttIssue KttIssue, kttClient *KttClient) *http.Request {
+//constructHTTPPOSTRequest returns http request with body marshalled from provided kttIssue
+func constructHTTPPOSTRequest(kttIssue KttIssue, kttClient *KttClient) *http.Request {
 	byteKttIssue, err := json.Marshal(kttIssue)
 	if err != nil {
 		log.Fatal(err)
@@ -209,8 +254,29 @@ func constructHTTPRequest(kttIssue KttIssue, kttClient *KttClient) *http.Request
 
 	fullURL := globalConfig.KTT.URL + "api/task/"
 	req, _ := http.NewRequest("POST", fullURL, bytes.NewBuffer(byteKttIssue))
-	req.Header.Set("Authorization", "Basic "+kttClient.Authorization)
+	req.Header.Set("Authorization", "Basic " + kttClient.Authorization)
 	req.Header.Set("Content-Type", "application/json")
+
+	return req
+
+}
+
+//constructHTTPGETRequest returns http request with body marshalled from provided kttIssue
+func constructHTTPGETRequest(jiraIssue string, kttClient *KttClient) *http.Request {
+	
+	fullURL := globalConfig.KTT.URL + "api/task/"// + "search=" + jiraIssue //+ "&fields=Id,ExecutorIds,Closed,Data"
+	fmt.Println(fullURL)
+	req, _ := http.NewRequest("GET", fullURL, nil)
+	req.Header.Set("Authorization", "Basic " + kttClient.Authorization)
+	req.Header.Set("Content-Type", "application/json")
+
+	q := req.URL.Query()
+
+	q.Add("search", jiraIssue)
+    //q.Add("fields", "Id,ExecutorIds,Closed,Data")
+	q.Add("fields", "Id,ExecutorIds,Closed")
+
+	req.URL.RawQuery = q.Encode()
 
 	return req
 
@@ -296,8 +362,8 @@ func convertEstimationToHours(jiraEstimation string) string {
 	return strconv.Itoa(totalHours)
 }
 
-//sendHTTPRequestToKTT sends HTTP request to KTT via kttClient, and returns response body as string
-func sendHTTPRequestToKTT(kttClient *KttClient, request *http.Request) KttResponse {
+//sendHTTPPOSTRequestToKTT sends HTTP POST request to KTT via kttClient, and returns response body as string
+func sendHTTPPOSTRequestToKTT(kttClient *KttClient, request *http.Request) KttResponse {
 	//Perform POST request against KTT only in "normal" mode
 	if applicationMode == "normal" {
 
@@ -331,6 +397,34 @@ func sendHTTPRequestToKTT(kttClient *KttClient, request *http.Request) KttRespon
 	return ""
 }
 
+//sendHTTPGETRequestToKTT sends HTTP GET request to KTT via kttClient, and returns response body as string
+func sendHTTPGETRequestToKTT(kttClient *KttClient, request *http.Request) KttResponse {
+
+		response, err := kttClient.Client.Do(request)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer response.Body.Close()
+
+		log.Printf("Status code %v", response.StatusCode)
+
+		//if response.StatusCode == http.StatusOK {
+			
+			bodyBytes, err := ioutil.ReadAll(response.Body)
+			if err != nil {
+				log.Fatal(err)
+			}
+			bodyString := string(bodyBytes)
+			//fmt.Println(bodyString)
+			log.Printf("Status code %v", bodyString)
+			return KttResponse(bodyString)
+		//}
+
+
+	//return ""
+}
+
+
 //getTicketID extracts ID of created KTT ticket from response body
 func getTicketID(kttResponse KttResponse) string {
 
@@ -353,6 +447,89 @@ func getTicketID(kttResponse KttResponse) string {
 	}
 
 	return ticketId
+}
+
+//getTicketIDs extracts IDs of found KTT tickets from response body
+func getTicketIDs(kttResponse KttResponse)[]KttTicketID {
+	fmt.Println("In getTicketIDs")
+	var ticketList []KttTicketID
+	var result map[string]interface{}
+	json.Unmarshal([]byte(kttResponse), &result)
+
+	fmt.Printf("Result type %T\n",result)
+
+	//tasks := result["Tasks"].([]map[string]interface{})
+	tasks := result["Tasks"].([]interface{})
+	fmt.Printf("Tasks type %T\n",tasks)
+	
+	for _, task := range tasks {
+		fmt.Println(task.(map[string]interface{})["Id"])
+		//ticketList = append(ticketList, KttTicketID(string(task.(map[string]interface{})["Id"])))	
+		
+	}
+	
+
+
+
+	return ticketList
+/* Result
+	{
+		"Tasks": [
+			{
+				"Closed": null,
+				"Data": "<field id=\"1129\" /><field id=\"1130\">SQD-620</field><field id=\"1131\">4</field><field id=\"1132\" /><field id=\"1133\">2021-06-28 09:00</field><field id=\"1134\" /><field id=\"1135\" /><field id=\"1136\" /><field id=\"1137\" /><field id=\"1138\" /><field id=\"1139\" /><field id=\"1140\" /><field id=\"1141\" /><field id=\"1142\" /><field id=\"1143\" /><field id=\"1211\">SQD-622</field>",
+				"Id": 147736,
+				"ExecutorIds": "5408"
+			},
+			{
+				"Closed": null,
+				"Data": "<field id=\"1129\" /><field id=\"1130\">SQD-620</field><field id=\"1131\">0</field><field id=\"1132\" /><field id=\"1133\">2021-06-28 09:00</field><field id=\"1134\" /><field id=\"1135\" /><field id=\"1136\" /><field id=\"1137\" /><field id=\"1138\" /><field id=\"1139\" /><field id=\"1140\" /><field id=\"1141\" /><field id=\"1142\" /><field id=\"1143\" /><field id=\"1211\">SQD-622</field>",
+				"Id": 147734,
+				"ExecutorIds": "5408"
+			},
+		],
+		"Priorities": [],
+		"Services": [],
+		"Statuses": [],
+		"Users": [],
+		"Paginator": {
+			"Count": 18,
+			"Page": 1,
+			"PageCount": 1,
+			"PageSize": 25,
+			"CountOnPage": 18,
+			"HasNextPage": null
+		}
+	}
+	*/
+
+
+/*
+{
+
+    "Statuses": null,
+    "Task": {
+        "Deadline": null,
+        "Description": "Коллеги, добрый день.",
+        "ExecutorIds": "5408",
+        "Hours": 0.0,
+        "Id": 147710,
+        "ServiceCode": "IMP_22",
+        "ServiceDescription": "",
+        "ServiceId": 150,
+        "Field1130": "SQD-620",
+        "Field1131": "0",
+        "Field1133": "2021-06-28T17:00:00",
+        "Field1211": "SQD-622"
+    }
+
+}
+
+
+*/
+
+
+
 }
 
 //printTransferResults prints statistics to standard output, and also prints links to created tickets in KTT
