@@ -223,7 +223,7 @@ func constructKttIssueFromJiraIssue(jiraIssue JiraIssue) KttIssue {
 
 	//Filled from Jira issue
 	kttIssue.Description = jiraIssue.ParentDescription
-	kttIssue.Name = jiraIssue.ParentSummary + "_" + jiraIssue.Summary
+	kttIssue.Name = jiraIssue.ParentKey + ": " + jiraIssue.ParentSummary + "_" + jiraIssue.Summary
 	kttIssue.Field1130 = jiraIssue.ParentKey
 	kttIssue.Field1131 = convertEstimationToHours(jiraIssue.Estimation)
 	kttIssue.Field1211 = jiraIssue.Key
